@@ -9,6 +9,20 @@ import random
 import multiprocessing
 
 
+def client(host,port="5556"):
+    context = zmq.Context()
+    clientSocket = context.socket(zmq.SUB)
+    topicFilter = ""
+    clientSocket.setsockopt_string(zmq.SUBSCRIBE, topicFilter)
+    url = "tcp://%s:%s" % (host,port)
+    print("Connecting to server: %s" % url )
+    clientSocket.connect(url)
+    while True:
+        data = clientSocket.recv_string()
+        parts = data.split()
+        message = " ".join(parts[1:])
+        print("\n%s" % (message))
+
 class Chat:
     username = "Anonymous"
     host = "localhost"
@@ -21,6 +35,8 @@ class Chat:
     clientSocket = None
     serverSocket = None
     clientProcess = None
+    namespace = None
+
 
     def init(self):
         self.printWelcome()
@@ -34,8 +50,8 @@ class Chat:
             self.port = int(args[2])
         if len(args) > 3:
             self.username = args[3]
+
         self.mgr = multiprocessing.Manager()
-        self.messagesList = self.mgr.list()
         self.peers = self.mgr.dict()
 
     def printWelcome(self):
@@ -49,61 +65,42 @@ class Chat:
         print("Running server on port %d" % port)
         while True:
             topic = "#"+str(random.randrange(9999,10002))
-            messagedata = input("> ")
-            if len(messagedata) > 0 and messagedata[0] == '\\':
-                if messagedata == '\\quit':
+            messageData = input("> ")
+            if len(messageData) > 0 and messageData[0] == '\\':
+                if messageData == '\\quit':
                     exit()
+                if messageData[0:8] == '\\connect':
+                    parts = messageData.split()
+                    if len(parts) < 3:
+                        print("Please use: \connect <host> <port>")
+                    else:
+                        self.connect(parts[1],parts[2])
             else:
-                self.send(topic,str(messagedata))
-            #socket.send_string("%d %d" % (topic, messagedata))
+                self.send(topic,str(messageData))
 
-    def client(self,host,port="5556"):
-        context = zmq.Context()
-        print ("Connecting to server with port %d" % port)
-        self.clientSocket = context.socket(zmq.SUB)
-        topicfilter = ""
-        self.clientSocket.setsockopt_string(zmq.SUBSCRIBE, topicfilter)
 
-        print("Connecting to server %s" %(port))
-        self.connect("tcp://%s:%s" % (host,port))
-        #for request in range(20):
-            #print ("Sending request %d ..." % request)
-            #socket.send_string("Hello")
-        while True:
-            data = self.clientSocket.recv_string()
-            parts = data.split()
-            message = " ".join(parts[1:])
-            topic = data[0]
-            if topic == 'HELLO':
-                remoteUID = parts[1]
-                remoteURL = parts[2]
-                if (remoteUID not in self.peers.keys()):
-                    self.peers[remoteUID] = remoteURL
-                    self.connect(url)
-            else:
-                print("<<< %s" % (message))
-
-    def connect(self,url):
-        self.clientSocket.connect(url)
+    def connect(self,host,port):
+        peer = multiprocessing.Process(target=client, args=(host,port,))
+        peer.daemon = True
+        peer.start()
 
     def send(self, topic, msg):
         message = self.username + str(topic) + "> " + msg
         print(message)
-        self.serverSocket.send_string("%s %s" % (topic, msg))
+        self.serverSocket.send_string("%s %s" % (topic, message))
 
 
 
 if __name__ == "__main__":
 
     c = Chat()
+    print(c.namespace)
+    c.port = 5555
 
     # Start client
-    c.clientProcess = multiprocessing.Process(target=c.client, args=(c.host,c.port,))
-    c.clientProcess.daemon = True
-    c.clientProcess.start()
+    #\connect localhost 5556
 
     c.init()
     c.server()
-    #multiprocessing.Process(target=server, args=(port,)).start()
 
 
