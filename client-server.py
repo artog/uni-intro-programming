@@ -2,20 +2,20 @@ __author__ = 'Adam'
 
 import sys
 import zmq
-import time
 import socket
-import hashlib
-import random
 import multiprocessing
+from multiprocessing import Array
+import time
+import ctypes
 
 if sys.version_info[0] >= 3:
-    def raw_input():
-        return input()
+    def raw_input(prompt=""):
+        return input(prompt)
 
-def client(host,port="5556"):
+def client(lock,blocked,host,port="5556"):
     context = zmq.Context()
     clientSocket = context.socket(zmq.SUB)
-    topicFilter = ""
+    topicFilter = "#test"
     clientSocket.setsockopt_string(zmq.SUBSCRIBE, topicFilter)
 
     # Connect to servers
@@ -28,46 +28,48 @@ def client(host,port="5556"):
         data = clientSocket.recv_string()
         parts = data.split()
         message = " ".join(parts[1:])
-        print("\n%s" % (message))
+        topic = parts[0]
+        lock.acquire()
+        blockedTopicsString = blocked.value.decode('utf-8')
+        lock.release()
+        blockedTopics = blockedTopicsString.split(':')
+        print(topic)
+        print(", ".join(blockedTopics))
+        if topic not in blockedTopics:
+            print("\r%s" % message)
 
 
 class Chat:
     username = "Anonymous"
     host = "localhost"
-    port = 5556
-    rand = str(random.random())+str(time.process_time())
-    rand = rand.encode('utf-8')
-    hash = hashlib.md5(rand)
-    uid = hash.hexdigest()
-    mgr = None
+    port = 5555
+    topic = ""
     clientSocket = None
     serverSocket = None
     clientProcess = None
-    namespace = None
-    lock = None
     peers = []
+    connectedHosts = []
+    blockedTopics = []
+    numBlockedTopics = 0
+    lock = None
+
 
     def init(self):
+        self.host = socket.gethostbyname(socket.gethostname())
         self.printWelcome()
 
         # Init args
         args = sys.argv
 
         if len(args) > 1:
-            self.host = args[1]
+            self.port = args[1]
         if len(args) > 2:
-            self.port = int(args[2])
-        if len(args) > 3:
-            self.username = args[3]
-
-        self.mgr = multiprocessing.Manager()
-        self.peers = self.mgr.dict()
+            self.username = args[2]
 
     def printWelcome(self):
         print("+------------------------------------------------------------")
-        print("| Welcome to ShitChat v0.1 - %s" % self.uid)
-        ip = socket.getbyhostname(socket.gethostname)
-        print("| Your ip is %s" % ip)
+        print("| Welcome to ShitChat v0.1")
+        print("| Your ip is %s" % self.host)
         print("+------------------------------------------------------------")
 
     def server(self):
@@ -76,32 +78,80 @@ class Chat:
         self.serverSocket = context.socket(zmq.PUB)
         self.serverSocket.bind("tcp://*:%s" % self.port)
 
-        print("Running server on port %d" % self.port)
+        print("Running server on port %s" % self.port)
 
         while True:
-            topic = "#"+str(random.randrange(9999,10002))
-            messageData = input("> ")
+            messageData = raw_input("%s> "%self.topic)
             if len(messageData) > 0 and messageData[0] == '\\':
                 parts = messageData.split()
                 cmd = parts[0][1:]
 
+                # Quit
                 if cmd == 'quit':
                     exit()
+                # Connect to new server
                 if cmd == 'connect':
                     if len(parts) < 3:
-                        print("Please use: \connect <host> <port>")
+                        print("Please use: \\connect <host> <port>")
                     else:
-                        self.connect(parts[1],parts[2])
+                        self.connect(
+                            parts[1], # Host
+                            parts[2]  # Port
+                        )
+                # Help
                 if cmd == "help":
                     print("Ask your mother.")
+
+                # Set channel
+                if cmd == "chan":
+                    if len(parts) < 2:
+                        print("No channel specified. Use \\chan <channel>")
+                    else:
+                        chan = parts[1]
+                        if chan[0] != "#":
+                            chan = "#"+chan
+                        self.topic = chan
+
+
+                # Set global channel
+                if cmd == "leave":
+                    self.topic = ""
+
+                # Set new username.
+                if cmd == "name":
+                    if len(parts) < 2:
+                        print("No name specified. Use \\name <new name>")
+                    else:
+                        self.username = parts[1]
+                if cmd == "disconnect":
+                    if len(parts) < 2:
+                        print("No channel specified to disconnect from. Use \\disconnect <channel>")
+                    else:
+                        self.lock.acquire()
+                        string = self.blockedTopics.value.decode('utf-8')
+                        stringParts = string.split(':')
+
+                        chan = parts[1]
+                        if chan[0] != "#":
+                            chan = "#"+chan
+
+                        stringParts.append(chan)
+                        print("Now blocking:")
+                        print(", ".join(stringParts))
+                        self.blockedTopics.value = ":".join(list(set(stringParts))).encode('ascii')
+                        self.lock.release()
             else:
-                self.send(topic,str(messageData))
+                self.send(self.topic,str(messageData))
 
 
     def connect(self,host,port):
-        self.peers.append(multiprocessing.Process(target=client, args=(host,port,)))
-        self.peers[-1].daemon = True
-        self.peers[-1].start()
+        p = multiprocessing.Process(target=client, args=(self.lock,self.blockedTopics,host,port,))
+        p.daemon = True
+        p.start()
+        self.peers.append(p)
+        self.connectedHosts.append("%s:%s"%(host,port))
+        time.sleep(1)
+
 
 
     def send(self, topic, msg):
@@ -112,16 +162,10 @@ class Chat:
 
 
 if __name__ == "__main__":
-
     c = Chat()
-
-    c.port = 5555
-
-    # Start client
-    #\connect localhost 5556
-    lock = multiprocessing.Lock()
-    parent,child = multiprocessing.Pipe()
-
+    c.lock = multiprocessing.Lock()
+    c.blockedTopics = Array(ctypes.c_char, 5000, lock=c.lock)
+    c.blockedTopics.value = "hello".encode('ascii')
     c.init()
     c.server()
 
