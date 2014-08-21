@@ -3,25 +3,33 @@ __author__ = 'Adam'
 import sys
 import zmq
 import time
-import datetime
+import socket
 import hashlib
 import random
 import multiprocessing
 
+if sys.version_info[0] >= 3:
+    def raw_input():
+        return input()
 
 def client(host,port="5556"):
     context = zmq.Context()
     clientSocket = context.socket(zmq.SUB)
     topicFilter = ""
     clientSocket.setsockopt_string(zmq.SUBSCRIBE, topicFilter)
+
+    # Connect to servers
     url = "tcp://%s:%s" % (host,port)
     print("Connecting to server: %s" % url )
     clientSocket.connect(url)
+
+    # Recieve messages
     while True:
         data = clientSocket.recv_string()
         parts = data.split()
         message = " ".join(parts[1:])
         print("\n%s" % (message))
+
 
 class Chat:
     username = "Anonymous"
@@ -36,7 +44,8 @@ class Chat:
     serverSocket = None
     clientProcess = None
     namespace = None
-
+    lock = None
+    peers = []
 
     def init(self):
         self.printWelcome()
@@ -55,34 +64,45 @@ class Chat:
         self.peers = self.mgr.dict()
 
     def printWelcome(self):
-        print("Welcome to ShitChat v0.1 - %s" % self.uid)
+        print("+------------------------------------------------------------")
+        print("| Welcome to ShitChat v0.1 - %s" % self.uid)
+        ip = socket.getbyhostname(socket.gethostname)
+        print("| Your ip is %s" % ip)
+        print("+------------------------------------------------------------")
 
+    def server(self):
 
-    def server(self,port=5556):
         context = zmq.Context()
         self.serverSocket = context.socket(zmq.PUB)
-        self.serverSocket.bind("tcp://*:%s" % port)
-        print("Running server on port %d" % port)
+        self.serverSocket.bind("tcp://*:%s" % self.port)
+
+        print("Running server on port %d" % self.port)
+
         while True:
             topic = "#"+str(random.randrange(9999,10002))
             messageData = input("> ")
             if len(messageData) > 0 and messageData[0] == '\\':
-                if messageData == '\\quit':
+                parts = messageData.split()
+                cmd = parts[0][1:]
+
+                if cmd == 'quit':
                     exit()
-                if messageData[0:8] == '\\connect':
-                    parts = messageData.split()
+                if cmd == 'connect':
                     if len(parts) < 3:
                         print("Please use: \connect <host> <port>")
                     else:
                         self.connect(parts[1],parts[2])
+                if cmd == "help":
+                    print("Ask your mother.")
             else:
                 self.send(topic,str(messageData))
 
 
     def connect(self,host,port):
-        peer = multiprocessing.Process(target=client, args=(host,port,))
-        peer.daemon = True
-        peer.start()
+        self.peers.append(multiprocessing.Process(target=client, args=(host,port,)))
+        self.peers[-1].daemon = True
+        self.peers[-1].start()
+
 
     def send(self, topic, msg):
         message = self.username + str(topic) + "> " + msg
@@ -94,11 +114,13 @@ class Chat:
 if __name__ == "__main__":
 
     c = Chat()
-    print(c.namespace)
+
     c.port = 5555
 
     # Start client
     #\connect localhost 5556
+    lock = multiprocessing.Lock()
+    parent,child = multiprocessing.Pipe()
 
     c.init()
     c.server()
