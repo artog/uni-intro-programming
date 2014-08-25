@@ -12,11 +12,11 @@ if sys.version_info[0] >= 3:
     def raw_input(prompt=""):
         return input(prompt)
 
-def client(lock,blocked,host,port="5556"):
+def client(blocked,host,port="5556"):
     context = zmq.Context()
     clientSocket = context.socket(zmq.SUB)
-    topicFilter = "#test"
-    clientSocket.setsockopt_string(zmq.SUBSCRIBE, topicFilter)
+    topicFilter = "".encode('utf-8')
+    clientSocket.setsockopt(zmq.SUBSCRIBE, topicFilter)
 
     # Connect to servers
     url = "tcp://%s:%s" % (host,port)
@@ -25,16 +25,13 @@ def client(lock,blocked,host,port="5556"):
 
     # Recieve messages
     while True:
-        data = clientSocket.recv_string()
+        data = clientSocket.recv()
         parts = data.split()
         message = " ".join(parts[1:])
         topic = parts[0]
-        lock.acquire()
-        blockedTopicsString = blocked.value.decode('utf-8')
-        lock.release()
-        blockedTopics = blockedTopicsString.split(':')
-        print(topic)
-        print(", ".join(blockedTopics))
+        with blocked.get_lock():
+            blockedTopicsString = blocked.value
+            blockedTopics = blockedTopicsString.split(':')
         if topic not in blockedTopics:
             print("\r%s" % message)
 
@@ -81,13 +78,18 @@ class Chat:
         print("Running server on port %s" % self.port)
 
         while True:
-            messageData = raw_input("%s> "%self.topic)
+            try:
+                messageData = raw_input("%s> "%self.topic)
+            except KeyboardInterrupt:
+                messageData = "\\quit"
+
             if len(messageData) > 0 and messageData[0] == '\\':
                 parts = messageData.split()
                 cmd = parts[0][1:]
 
                 # Quit
                 if cmd == 'quit':
+                    print("Bye!")
                     exit()
                 # Connect to new server
                 if cmd == 'connect':
@@ -127,19 +129,18 @@ class Chat:
                     if len(parts) < 2:
                         print("No channel specified to disconnect from. Use \\disconnect <channel>")
                     else:
-                        self.lock.acquire()
-                        string = self.blockedTopics.value.decode('utf-8')
-                        stringParts = string.split(':')
+                        with self.blockedTopics.get_lock():
+                            string = self.blockedTopics.value.decode('utf-8')
+                            stringParts = string.split(':')
 
-                        chan = parts[1]
-                        if chan[0] != "#":
-                            chan = "#"+chan
+                            chan = parts[1]
+                            if chan[0] != "#":
+                                chan = "#"+chan
 
-                        stringParts.append(chan)
-                        print("Now blocking:")
-                        print(", ".join(stringParts))
-                        self.blockedTopics.value = ":".join(list(set(stringParts))).encode('ascii')
-                        self.lock.release()
+                            stringParts.append(chan)
+                            print("Now blocking:")
+                            print(", ".join(stringParts))
+                            self.blockedTopics.value = ":".join(list(set(stringParts))).encode('ascii')
             else:
                 self.send(self.topic,str(messageData))
 
@@ -157,14 +158,14 @@ class Chat:
     def send(self, topic, msg):
         message = self.username + str(topic) + "> " + msg
         print(message)
-        self.serverSocket.send_string("%s %s" % (topic, message))
+        self.serverSocket.send(("%s %s" % (topic, message)))
 
 
 
 if __name__ == "__main__":
     c = Chat()
     c.lock = multiprocessing.Lock()
-    c.blockedTopics = Array(ctypes.c_char, 5000, lock=c.lock)
+    c.blockedTopics = Array(ctypes.c_char, 5000)
     c.blockedTopics.value = "hello".encode('ascii')
     c.init()
     c.server()
